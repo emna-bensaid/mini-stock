@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'models/article.dart';
 
 /// Service centralisant tous les appels à l'API Laminas.
 ///
@@ -10,34 +11,25 @@ class ApiService {
 
   ApiService({this.baseUrl = 'http://localhost:8000'});
 
-  /// Envoie un lot de scans à l'API.
-  /// Pour chaque entrée (code-barres -> quantité) on fait un POST /stock.
-  ///
-  /// Note maquette : on envoie le code-barres dans le champ `nom`
-  /// (placeholder ; à remplacer par un vrai champ `code_barre` plus tard).
-  Future<ResultatEnvoi> envoyerScans(Map<String, int> comptage) async {
+  /// Envoie une liste d'articles à l'API. Un POST /stock par article.
+  Future<ResultatEnvoi> envoyerArticles(List<Article> articles) async {
     int succes = 0;
     final List<String> erreurs = [];
 
-    for (final entry in comptage.entries) {
-      final code = entry.key;
-      final qte = entry.value;
+    for (final article in articles) {
       try {
         final res = await http.post(
           Uri.parse('$baseUrl/stock'),
           headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'nom': code,       // placeholder pour le code-barres
-            'quantite': qte,
-          }),
+          body: jsonEncode(article.toJson()),
         );
         if (res.statusCode == 201) {
           succes++;
         } else {
-          erreurs.add('$code : HTTP ${res.statusCode}');
+          erreurs.add('${article.codeBarre} : HTTP ${res.statusCode}');
         }
       } catch (e) {
-        erreurs.add('$code : $e');
+        erreurs.add('${article.codeBarre} : $e');
       }
     }
 

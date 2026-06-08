@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // pour HapticFeedback
 import 'api_service.dart';
+import 'models/article.dart';
 
 /// Écran de scan / comptage d'articles par code-barres.
 class ScanPage extends StatefulWidget {
@@ -17,6 +19,9 @@ class _ScanPageState extends State<ScanPage> {
   final Map<String, int> _comptage = {};
 
   // ⚠️ Adapte l'URL selon ta cible :
+  //   - Émulateur Android : http://10.0.2.2:8000
+  //   - Web / iOS         : http://localhost:8000
+  //   - Téléphone physique: http://<IP de ton PC>:8000
   final ApiService _api = ApiService(baseUrl: 'http://localhost:8000');
 
   bool _envoiEnCours = false;
@@ -39,6 +44,8 @@ class _ScanPageState extends State<ScanPage> {
   void _onScan(String code) {
     code = code.trim();
     if (code.isEmpty) return;
+    // A3 : retour physique pour l'opérateur (vibre sur mobile).
+    HapticFeedback.lightImpact();
     setState(() {
       _comptage[code] = (_comptage[code] ?? 0) + 1;
     });
@@ -96,35 +103,78 @@ class _ScanPageState extends State<ScanPage> {
 
   int get _total => _comptage.values.fold(0, (a, b) => a + b);
 
-  /// Envoie réellement le lot à l'API.
-  Future<void> _envoyer() async {
+  /// A1 : conversion de la map en liste d'Article typés.
+  List<Article> get _articlesAEnvoyer => _comptage.entries
+      .map((e) => Article(codeBarre: e.key, quantite: e.value))
+      .toList();
+
+  /// A4 : confirmation avant l'envoi réel.
+  Future<void> _confirmerEtEnvoyer() async {
     if (_envoiEnCours || _comptage.isEmpty) return;
 
+    final nbArticles = _comptage.length;
+    final totalUnites = _total;
+
+    final confirme = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Confirmer l'envoi"),
+        content: Text(
+          'Envoyer $nbArticles article(s) différent(s) '
+          'pour un total de $totalUnites unité(s) au stock ?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Annuler'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Envoyer'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirme == true) {
+      await _envoyer();
+    } else {
+      _focusNode.requestFocus();
+    }
+  }
+
+  /// Envoie réellement le lot.
+  Future<void> _envoyer() async {
     setState(() => _envoiEnCours = true);
-    final resultat = await _api.envoyerScans(_comptage);
+    final resultat = await _api.envoyerArticles(_articlesAEnvoyer);
     setState(() => _envoiEnCours = false);
 
     if (!mounted) return;
 
     if (resultat.touteReussi) {
       setState(() => _comptage.clear());
-      _afficherDialogue(
-        titre: '✅ Envoyé',
-        contenu: '${resultat.succes} article(s) enregistré(s) au stock.',
+      // A2 : snackbar discret au lieu d'un gros dialogue.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text('✅ ${resultat.succes} article(s) envoyé(s) au stock'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 3),
+        ),
       );
     } else if (resultat.succes > 0) {
+      // En cas d'échec partiel on garde le dialogue : c'est important
+      // que l'opérateur voie ce qui n'est pas passé.
       _afficherDialogue(
         titre: '⚠️ Échec partiel',
-        contenu:
-            'Réussi : ${resultat.succes}\n'
+        contenu: 'Réussi : ${resultat.succes}\n'
             'Échoué : ${resultat.erreurs.length}\n\n'
             'Détails :\n${resultat.erreurs.join("\n")}',
       );
     } else {
       _afficherDialogue(
         titre: '❌ Échec',
-        contenu:
-            "Aucun article n'a pu être envoyé.\n\n"
+        contenu: "Aucun article n'a pu être envoyé.\n\n"
             'Détails :\n${resultat.erreurs.join("\n")}',
       );
     }
@@ -230,7 +280,7 @@ class _ScanPageState extends State<ScanPage> {
             child: SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: boutonActif ? _envoyer : null,
+                onPressed: boutonActif ? _confirmerEtEnvoyer : null,
                 icon: _envoiEnCours
                     ? const SizedBox(
                         width: 18,
