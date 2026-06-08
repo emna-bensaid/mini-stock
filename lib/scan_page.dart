@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
+import 'api_service.dart';
 
 /// Écran de scan / comptage d'articles par code-barres.
-///
-/// Principe : le terminal industriel (ou un clavier en test) "tape" le
-/// code-barres dans un champ texte focalisé, puis envoie Entrée. À chaque
-/// Entrée on incrémente la quantité de cet article. La quantité reste
-/// modifiable à la main pour couvrir le cas "une pile de N articles".
 class ScanPage extends StatefulWidget {
   const ScanPage({super.key});
 
@@ -14,18 +10,20 @@ class ScanPage extends StatefulWidget {
 }
 
 class _ScanPageState extends State<ScanPage> {
-  // Garde le focus sur le champ de scan en permanence.
   final FocusNode _focusNode = FocusNode();
-  // Contrôle le contenu du champ de scan (pour le vider après chaque scan).
   final TextEditingController _ctrl = TextEditingController();
 
   // Le coeur de l'écran : code-barres -> quantité comptée.
   final Map<String, int> _comptage = {};
 
+  // ⚠️ Adapte l'URL selon ta cible :
+  final ApiService _api = ApiService(baseUrl: 'http://localhost:8000');
+
+  bool _envoiEnCours = false;
+
   @override
   void initState() {
     super.initState();
-    // Dès que l'écran est affiché, on met le focus sur le champ de scan.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
     });
@@ -33,30 +31,26 @@ class _ScanPageState extends State<ScanPage> {
 
   @override
   void dispose() {
-    // Toujours libérer les ressources pour éviter les fuites mémoire.
     _focusNode.dispose();
     _ctrl.dispose();
     super.dispose();
   }
 
-  /// Appelé à chaque scan (= Entrée envoyée par le scanner ou le clavier).
   void _onScan(String code) {
     code = code.trim();
     if (code.isEmpty) return;
     setState(() {
-      // +1 si déjà présent, sinon on démarre à 1.
       _comptage[code] = (_comptage[code] ?? 0) + 1;
     });
-    _ctrl.clear();                 // on vide le champ
-    _focusNode.requestFocus();     // on reste prêt pour le scan suivant
+    _ctrl.clear();
+    _focusNode.requestFocus();
   }
 
-  /// Boutons - / + sur chaque ligne pour corriger la quantité.
   void _modifierQuantite(String code, int delta) {
     setState(() {
       final nouveau = (_comptage[code] ?? 0) + delta;
       if (nouveau <= 0) {
-        _comptage.remove(code); // 0 ou moins -> on retire la ligne
+        _comptage.remove(code);
       } else {
         _comptage[code] = nouveau;
       }
@@ -64,7 +58,6 @@ class _ScanPageState extends State<ScanPage> {
     _focusNode.requestFocus();
   }
 
-  /// Appui sur une ligne -> saisir une quantité précise (cas "pile de N").
   Future<void> _saisirQuantite(String code) async {
     final dialogCtrl = TextEditingController(text: '${_comptage[code]}');
     final result = await showDialog<int>(
@@ -96,26 +89,54 @@ class _ScanPageState extends State<ScanPage> {
     _focusNode.requestFocus();
   }
 
-  /// Tout effacer (pour recommencer un comptage).
   void _viderTout() {
     setState(() => _comptage.clear());
     _focusNode.requestFocus();
   }
 
-  /// Total de tous les articles comptés.
   int get _total => _comptage.values.fold(0, (a, b) => a + b);
 
-  /// Pour l'instant : affiche ce qui SERAIT envoyé à l'API.
-  /// Plus tard : remplacer par un POST du lot vers l'API Laminas.
-  void _envoyer() {
-    final lignes = _comptage.entries
-        .map((e) => '${e.key}  ->  ${e.value}')
-        .join('\n');
+  /// Envoie réellement le lot à l'API.
+  Future<void> _envoyer() async {
+    if (_envoiEnCours || _comptage.isEmpty) return;
+
+    setState(() => _envoiEnCours = true);
+    final resultat = await _api.envoyerScans(_comptage);
+    setState(() => _envoiEnCours = false);
+
+    if (!mounted) return;
+
+    if (resultat.touteReussi) {
+      setState(() => _comptage.clear());
+      _afficherDialogue(
+        titre: '✅ Envoyé',
+        contenu: '${resultat.succes} article(s) enregistré(s) au stock.',
+      );
+    } else if (resultat.succes > 0) {
+      _afficherDialogue(
+        titre: '⚠️ Échec partiel',
+        contenu:
+            'Réussi : ${resultat.succes}\n'
+            'Échoué : ${resultat.erreurs.length}\n\n'
+            'Détails :\n${resultat.erreurs.join("\n")}',
+      );
+    } else {
+      _afficherDialogue(
+        titre: '❌ Échec',
+        contenu:
+            "Aucun article n'a pu être envoyé.\n\n"
+            'Détails :\n${resultat.erreurs.join("\n")}',
+      );
+    }
+    _focusNode.requestFocus();
+  }
+
+  void _afficherDialogue({required String titre, required String contenu}) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("À envoyer à l'API"),
-        content: Text(lignes.isEmpty ? 'Aucun article.' : lignes),
+        title: Text(titre),
+        content: SingleChildScrollView(child: Text(contenu)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -129,12 +150,12 @@ class _ScanPageState extends State<ScanPage> {
   @override
   Widget build(BuildContext context) {
     final codes = _comptage.keys.toList();
+    final boutonActif = _comptage.isNotEmpty && !_envoiEnCours;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Scan inventaire'),
         actions: [
-          // Total visible en permanence.
           Center(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -144,24 +165,22 @@ class _ScanPageState extends State<ScanPage> {
               ),
             ),
           ),
-          // Tout effacer.
           IconButton(
             icon: const Icon(Icons.delete_outline),
             tooltip: 'Tout effacer',
-            onPressed: _comptage.isEmpty ? null : _viderTout,
+            onPressed: (_comptage.isEmpty || _envoiEnCours) ? null : _viderTout,
           ),
         ],
       ),
       body: Column(
         children: [
-          // Champ de scan (visible pour bien comprendre / déboguer).
           Padding(
             padding: const EdgeInsets.all(12),
             child: TextField(
               focusNode: _focusNode,
               controller: _ctrl,
               autofocus: true,
-              onSubmitted: _onScan, // déclenché par l'Entrée du scanner
+              onSubmitted: _onScan,
               decoration: const InputDecoration(
                 labelText: 'Scanner ici',
                 hintText: 'Scannez un article (ou tapez un code + Entrée)',
@@ -171,8 +190,6 @@ class _ScanPageState extends State<ScanPage> {
             ),
           ),
           const Divider(height: 1),
-
-          // Liste des articles comptés.
           Expanded(
             child: codes.isEmpty
                 ? const Center(child: Text('Aucun article scanné'))
@@ -184,17 +201,23 @@ class _ScanPageState extends State<ScanPage> {
                       return ListTile(
                         title: Text(code),
                         subtitle: Text('Quantité : $qte'),
-                        onTap: () => _saisirQuantite(code), // saisie précise
+                        onTap: _envoiEnCours
+                            ? null
+                            : () => _saisirQuantite(code),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
                               icon: const Icon(Icons.remove_circle_outline),
-                              onPressed: () => _modifierQuantite(code, -1),
+                              onPressed: _envoiEnCours
+                                  ? null
+                                  : () => _modifierQuantite(code, -1),
                             ),
                             IconButton(
                               icon: const Icon(Icons.add_circle_outline),
-                              onPressed: () => _modifierQuantite(code, 1),
+                              onPressed: _envoiEnCours
+                                  ? null
+                                  : () => _modifierQuantite(code, 1),
                             ),
                           ],
                         ),
@@ -202,16 +225,25 @@ class _ScanPageState extends State<ScanPage> {
                     },
                   ),
           ),
-
-          // Bouton d'envoi.
           Padding(
             padding: const EdgeInsets.all(12),
             child: SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: _comptage.isEmpty ? null : _envoyer,
-                icon: const Icon(Icons.cloud_upload),
-                label: const Text('Envoyer au stock'),
+                onPressed: boutonActif ? _envoyer : null,
+                icon: _envoiEnCours
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.cloud_upload),
+                label: Text(
+                  _envoiEnCours ? 'Envoi en cours...' : 'Envoyer au stock',
+                ),
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
@@ -223,4 +255,3 @@ class _ScanPageState extends State<ScanPage> {
     );
   }
 }
-
