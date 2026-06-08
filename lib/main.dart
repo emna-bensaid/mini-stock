@@ -1,8 +1,8 @@
 import 'dart:convert'; //les outils permettant de travailler avec le JSON.
 import 'package:flutter/material.dart';  //Importe tous les composants graphiques Flutter
 import 'package:http/http.dart' as http; //Importe la bibliothèque HTTP
-
-// ⚠️ Adapte cette URL selon ta cible 
+//pour le scan 
+import 'scan_page.dart';
 const String baseUrl = 'http://localhost:8000';
 
 void main() => runApp(const MyApp());  //affiche l'application à l'écran.
@@ -31,7 +31,7 @@ class _StockPageState extends State<StockPage> { //Ici sont stockées les variab
   //Contrôleurs des champs
   final _nomCtrl = TextEditingController();
   final _qteCtrl = TextEditingController();
-
+  
   @override
   void initState() {
     super.initState();
@@ -88,7 +88,19 @@ class _StockPageState extends State<StockPage> { //Ici sont stockées les variab
   //Construction de l'écran
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Mini Stock')),
+      appBar: AppBar(
+  title: const Text('Mini Stock'),
+  actions: [
+    IconButton(
+      icon: const Icon(Icons.qr_code_scanner),
+      tooltip: 'Scanner',
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const ScanPage()),
+      ),
+    ),
+  ],
+),
       body: Column(
         children: [
           Padding(
