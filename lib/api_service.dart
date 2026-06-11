@@ -3,13 +3,28 @@ import 'package:http/http.dart' as http;
 import 'models/article.dart';
 
 /// Service centralisant tous les appels à l'API Laminas.
-///
-/// Si l'URL de base change (déménagement, intégration ERP...),
-/// on ne modifie que cette classe.
 class ApiService {
   final String baseUrl;
 
   ApiService({this.baseUrl = 'http://localhost:8000'});
+
+  /// B3 : charge tout le catalogue d'articles depuis l'API.
+  /// Retourne une Map code-barres -> Article pour des lookups instantanés.
+  Future<Map<String, Article>> chargerCatalogue() async {
+    final res = await http.get(Uri.parse('$baseUrl/articles'));
+    if (res.statusCode != 200) {
+      throw Exception('Catalogue indisponible : HTTP ${res.statusCode}');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final liste = (data['_embedded']?['articles'] as List?) ?? [];
+
+    final catalogue = <String, Article>{};
+    for (final json in liste) {
+      final art = Article.fromJson(json as Map<String, dynamic>);
+      catalogue[art.codeBarre] = art;
+    }
+    return catalogue;
+  }
 
   /// Envoie une liste d'articles à l'API. Un POST /stock par article.
   Future<ResultatEnvoi> envoyerArticles(List<Article> articles) async {
@@ -37,7 +52,6 @@ class ApiService {
   }
 }
 
-/// Résultat d'un envoi de lot : combien ont réussi, lesquels ont échoué.
 class ResultatEnvoi {
   final int succes;
   final List<String> erreurs;

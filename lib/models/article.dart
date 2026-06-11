@@ -1,34 +1,40 @@
-/// Représente un article identifié par son code-barres,
-/// avec sa quantité comptée. Le champ `nom` sera rempli plus tard
-/// par la recherche dans l'API (étape B).
+/// Représente un article identifié par son code-barres.
 class Article {
   final String codeBarre;
-  final String? nom; // null tant qu'on ne l'a pas cherché dans l'API
+  final String? nom; // null = inconnu (pas trouvé dans le catalogue)
   final int quantite;
 
   const Article({
     required this.codeBarre,
     this.nom,
-    required this.quantite,
+    this.quantite = 0,
   });
 
-  /// Construit un Article à partir du JSON renvoyé par l'API.
-  /// Note maquette : pour l'instant l'API stocke le code-barres
-  /// dans le champ `nom`. À nettoyer quand l'ERP sera branché.
+  /// Construit un Article depuis le JSON renvoyé par l'API.
+  /// Gère les deux schémas :
+  ///   - table articles : { code_barre, nom }
+  ///   - table stock    : { nom (=code-barre placeholder), quantite }
   factory Article.fromJson(Map<String, dynamic> json) {
+    if (json.containsKey('code_barre')) {
+      return Article(
+        codeBarre: json['code_barre'].toString(),
+        nom: json['nom']?.toString(),
+        quantite: (json['quantite'] as num?)?.toInt() ?? 0,
+      );
+    }
     return Article(
       codeBarre: json['nom']?.toString() ?? '',
       quantite: (json['quantite'] as num?)?.toInt() ?? 0,
     );
   }
 
-  /// Format envoyé à l'API lors d'un POST.
+  /// Format envoyé à l'API lors d'un POST sur /stock.
+  /// On envoie le code-barres dans le champ `nom` (placeholder maquette).
   Map<String, dynamic> toJson() => {
-        'nom': codeBarre, // placeholder maquette
+        'nom': codeBarre,
         'quantite': quantite,
       };
 
-  /// Retourne une copie modifiée de l'Article.
   Article copyWith({String? codeBarre, String? nom, int? quantite}) {
     return Article(
       codeBarre: codeBarre ?? this.codeBarre,

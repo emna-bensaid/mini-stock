@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // pour HapticFeedback
+import 'package:flutter/services.dart';
 import 'api_service.dart';
 import 'models/article.dart';
 
@@ -15,13 +15,11 @@ class _ScanPageState extends State<ScanPage> {
   final FocusNode _focusNode = FocusNode();
   final TextEditingController _ctrl = TextEditingController();
 
-  // Le coeur de l'écran : code-barres -> quantité comptée.
   final Map<String, int> _comptage = {};
 
-  // ⚠️ Adapte l'URL selon ta cible :
-  //   - Émulateur Android : http://10.0.2.2:8000
-  //   - Web / iOS         : http://localhost:8000
-  //   - Téléphone physique: http://<IP de ton PC>:8000
+  Map<String, Article> _catalogue = {};
+  bool _catalogueCharge = false;
+
   final ApiService _api = ApiService(baseUrl: 'http://localhost:8000');
 
   bool _envoiEnCours = false;
@@ -32,6 +30,7 @@ class _ScanPageState extends State<ScanPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
     });
+    _chargerCatalogue();
   }
 
   @override
@@ -41,10 +40,55 @@ class _ScanPageState extends State<ScanPage> {
     super.dispose();
   }
 
+  Future<void> _chargerCatalogue() async {
+    try {
+      final catalogue = await _api.chargerCatalogue();
+      if (!mounted) return;
+      setState(() {
+        _catalogue = catalogue;
+        _catalogueCharge = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('📚 Catalogue chargé (${catalogue.length} articles)'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⚠️ Impossible de charger le catalogue : $e'),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  /// Traite un scan. Rejette le code s'il n'est pas dans le catalogue.
   void _onScan(String code) {
     code = code.trim();
     if (code.isEmpty) return;
-    // A3 : retour physique pour l'opérateur (vibre sur mobile).
+
+    // Si le catalogue est chargé ET que le code n'y est pas : on rejette.
+    if (_catalogueCharge && !_catalogue.containsKey(code)) {
+      HapticFeedback.heavyImpact(); // vibration plus marquée pour l'erreur
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '⚠️ Code "$code" inconnu — scan flou ou non référencé',
+          ),
+          backgroundColor: Colors.red.shade700,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      _ctrl.clear();
+      _focusNode.requestFocus();
+      return;
+    }
+
+    // Article connu (ou catalogue pas encore chargé) : on incrémente.
     HapticFeedback.lightImpact();
     setState(() {
       _comptage[code] = (_comptage[code] ?? 0) + 1;
@@ -103,12 +147,10 @@ class _ScanPageState extends State<ScanPage> {
 
   int get _total => _comptage.values.fold(0, (a, b) => a + b);
 
-  /// A1 : conversion de la map en liste d'Article typés.
   List<Article> get _articlesAEnvoyer => _comptage.entries
       .map((e) => Article(codeBarre: e.key, quantite: e.value))
       .toList();
 
-  /// A4 : confirmation avant l'envoi réel.
   Future<void> _confirmerEtEnvoyer() async {
     if (_envoiEnCours || _comptage.isEmpty) return;
 
@@ -143,7 +185,6 @@ class _ScanPageState extends State<ScanPage> {
     }
   }
 
-  /// Envoie réellement le lot.
   Future<void> _envoyer() async {
     setState(() => _envoiEnCours = true);
     final resultat = await _api.envoyerArticles(_articlesAEnvoyer);
@@ -153,18 +194,14 @@ class _ScanPageState extends State<ScanPage> {
 
     if (resultat.touteReussi) {
       setState(() => _comptage.clear());
-      // A2 : snackbar discret au lieu d'un gros dialogue.
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text('✅ ${resultat.succes} article(s) envoyé(s) au stock'),
+          content: Text('✅ ${resultat.succes} article(s) envoyé(s) au stock'),
           backgroundColor: Colors.green,
           duration: const Duration(seconds: 3),
         ),
       );
     } else if (resultat.succes > 0) {
-      // En cas d'échec partiel on garde le dialogue : c'est important
-      // que l'opérateur voie ce qui n'est pas passé.
       _afficherDialogue(
         titre: '⚠️ Échec partiel',
         contenu: 'Réussi : ${resultat.succes}\n'
@@ -231,11 +268,13 @@ class _ScanPageState extends State<ScanPage> {
               controller: _ctrl,
               autofocus: true,
               onSubmitted: _onScan,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Scanner ici',
-                hintText: 'Scannez un article (ou tapez un code + Entrée)',
-                prefixIcon: Icon(Icons.qr_code_scanner),
-                border: OutlineInputBorder(),
+                hintText: _catalogueCharge
+                    ? 'Scannez un article (catalogue : ${_catalogue.length})'
+                    : 'Scannez un article (catalogue en cours de chargement...)',
+                prefixIcon: const Icon(Icons.qr_code_scanner),
+                border: const OutlineInputBorder(),
               ),
             ),
           ),
@@ -248,9 +287,22 @@ class _ScanPageState extends State<ScanPage> {
                     itemBuilder: (ctx, i) {
                       final code = codes[i];
                       final qte = _comptage[code]!;
+                      final article = _catalogue[code];
+                      // Tous les articles dans la liste sont connus (les inconnus
+                      // sont rejetés avant ajout), mais on garde un fallback.
+                      final nom = article?.nom ?? code;
                       return ListTile(
-                        title: Text(code),
-                        subtitle: Text('Quantité : $qte'),
+                        leading: const Icon(
+                          Icons.check_circle_outline,
+                          color: Colors.green,
+                        ),
+                        title: Text(
+                          nom,
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                        subtitle: Text(
+                          'Code : $code   ·   Quantité : $qte',
+                        ),
                         onTap: _envoiEnCours
                             ? null
                             : () => _saisirQuantite(code),
